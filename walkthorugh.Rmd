@@ -1,0 +1,202 @@
+---
+title: "getarc Deep Dive"
+author: "Matthew Whittle"
+date: "09/11/2021"
+output: 
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+```{r}
+rm(list = ls())
+
+library(tidyverse)
+library(sf)
+library(getarc)
+library(leaflet)
+library(leafem)
+library(janitor)
+```
+
+```{r}
+colours <- 
+  list(
+  "Cedar Chest" = "#d5573b",
+  "Tuscan Red" = "#885053",
+  "Rhythm" = "#777da7",
+  "Eton Blue" = "#94c9a9",
+  "Tea Green" = "#c6ecae"
+)
+```
+
+```{r}
+discharges <- 
+    query_layer(endpoint = "https://services3.arcgis.com/Bb8lfThdhugyc4G3/arcgis/rest/services/Consented_Discharges_2019/FeatureServer/0", 
+        return_n = 10)
+
+```
+
+```{r}
+discharges %>% rmarkdown::paged_table()
+```
+
+```{r}
+leaflet() %>% 
+  addTiles() %>% 
+  addFeatures(discharges)
+```
+
+```{r}
+ep_storm_overflows_2020 <- "https://services3.arcgis.com/Bb8lfThdhugyc4G3/arcgis/rest/services/Event_Duration_Monitoring_Storm_Overflows_2020/FeatureServer/0"
+
+```
+
+```{r}
+overflow_2020 <- query_layer(endpoint = ep_storm_overflows_2020)
+```
+
+```{r}
+ep_counties <- "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Counties_and_Unitary_Authorities_May_2021_UK_BFC_v2/FeatureServer/0"
+```
+
+```{r}
+counties <- query_layer(ep_counties, return_geometry = FALSE)
+```
+
+```{r}
+DT::datatable(counties)
+```
+
+```{r}
+north_yorkshire <- query_layer(ep_counties, where = "CTYUA21NM = 'North Yorkshire'")
+```
+
+```{r}
+map <- 
+  leaflet() %>% 
+  addTiles() %>% 
+  addFeatures(north_yorkshire)
+map
+```
+
+```{r}
+ep_national_parks <- "https://services.arcgis.com//JJzESW51TqeY9uat/arcgis/rest/services/National_Parks_England/FeatureServer/0"
+```
+
+```{r}
+national_parks <- query_layer(endpoint = ep_national_parks, return_geometry = FALSE)
+DT::datatable(national_parks)
+```
+
+```{r}
+yorkshire_dales <- query_layer(ep_national_parks, where = "NAME = 'YORKSHIRE DALES'")
+```
+
+```{r}
+map <- 
+  leaflet() %>% 
+  addTiles() %>% 
+  addFeatures(yorkshire_dales, color = "green")
+map
+```
+
+```{r}
+overflows <- 
+  query_layer(endpoint = ep_storm_overflows_2020, in_geometry = st_union(north_yorkshire))
+```
+
+```{r}
+overflow_map <- 
+  map %>% 
+  addFeatures(overflows, color = "brown")
+overflow_map
+```
+
+```{r}
+affected_sssi <- 
+  query_layer(endpoints$sssi_england, 
+            in_geometry = overflows %>% st_transform(crs = 27700) %>% st_buffer(50) %>% st_union())
+```
+
+```{r}
+overflow_map %>% 
+  addFeatures(affected_sssi)
+```
+
+```{r}
+ep_priority_rivers <- "https://services.arcgis.com/JJzESW51TqeY9uat/arcgis/rest/services/Priority_River_Habitat_Rivers/FeatureServer/0"
+ep_priority_headwaters_areas <- "https://services.arcgis.com/JJzESW51TqeY9uat/arcgis/rest/services/Priority_River_Habitat_Headwater_Areas/FeatureServer/0"
+ep_met_counties <- "https://ons-inspire.esriuk.com/arcgis/rest/services/Other_Boundaries/Metropolitan_Counties_December_2018_EN_BFC/MapServer/0"
+```
+
+```{r}
+west_yorkshire <- query_layer(ep_met_counties, where = "mcty18nm = 'West Yorkshire'")
+plot(west_yorkshire$geometry)
+```
+
+```{r}
+map_wy <- 
+  leaflet() %>% 
+  addTiles() %>% 
+  addFeatures(west_yorkshire, color = colours$Rhythm, fill = FALSE, opacity = 0.95)
+map_wy
+```
+
+```{r}
+overflows_wy <- query_layer(endpoint = ep_storm_overflows_2020, 
+                            in_geometry = st_union(west_yorkshire))
+
+overflows_wy <- clean_names(overflows_wy)
+
+
+```
+
+query_layer outputs a simple features (sf) data frame. You can manipulate this just like a tibble.
+
+```{r}
+overflows_wy <- 
+  overflows_wy %>% 
+  mutate(total_duration_hrs = round(as.numeric(total_duration_hrs), 1)) %>% 
+  arrange(desc(total_duration_hrs))
+
+rmarkdown::paged_table(overflows_wy)
+```
+
+```{r}
+
+qpal <- 
+  colorQuantile(palette = c(colours$Rhythm, colours$`Eton Blue`, colours$`Cedar Chest`),
+             domain = overflows_wy$total_duration_hrs, n = 5)
+
+
+qpal_labels <- 
+  function(qpal, domain, n){
+    qpal_labs <- quantile(domain, seq(0, 1, 1/n), na.rm = TRUE) # depends on n from pal
+    qpal_labs <- paste(round(qpal_labs, 1), "Hrs")
+    paste(lag(qpal_labs), qpal_labs, sep = " - ")[-1] # first lag is NA
+    
+  }
+qpal_colours <-
+  function(qpal, domain, n){
+    unique(qpal(sort(domain))) # hex codes
+  }
+
+
+```
+
+```{r}
+
+map_wy %>% 
+  addFeatures(overflows_wy, color = ~pal(total_duration_hrs), 
+              fillOpacity = 0.7, strokeOpacity = 0.9,
+              popup = ~glue::glue("<b>{company_name}: {site_name}</b><br><b>{total_duration_hrs}</b> Overflow Hours")) %>% 
+  addLegend(
+    colors = qpal_colours(qpal, domain = overflows_wy$total_duration_hrs, n = 5), 
+    labels = qpal_labels(qpal, domain = overflows_wy$total_duration_hrs, n = 5))
+```
