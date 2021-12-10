@@ -1,0 +1,215 @@
+---
+title: "getarc Deep-Dive"
+author: "Matthew Whittle"
+date: "07/12/2021"
+output: 
+  html_document: 
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    css: "style.css"
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+# Outline:
+
+-   Downloading a feature layer
+
+-   Perform some analysis in R
+
+-   Performing queries:
+
+    -   where query
+
+    -   spatial query
+
+-   Strategies for working with large datasets:
+
+    -   Subset columns
+
+    -   Limit feature count
+
+    -   Return a table
+
+    -   Returning less precise geometry
+
+<https://craft.co/jacobs/locations>
+
+------------------------------------------------------------------------
+
+# Feature Layer
+
+ArcGIS host spatial data in 'Feature Layers'. Below is an example: the World Countries Feature Layer.
+
+[![Explore view of World Countries (Generalised) Feature Layer](images/Screenshot%202021-12-09%20at%2006.39.31-01.png "World Countries Feature Layer"){width="512"}](https://hub.arcgis.com/datasets/2b93b06dc0dc4e809d3c8db5cb96ba69_0/explore)
+
+### How do we access these data in R?
+
+You can download the layer directly in various formats (shapefile, GeoJSON, etc.) which you could read into R locally. But with the `getarc` package, we can query the feature layer to download all or part of it. To do this we need to find the service URL for the layer:
+
+1.  Click 'View Full Details' to visit the Feature Server Page (this is what our layer sits on)
+
+2.  Click the layer we want (sometimes there are more than one on a FS).
+
+    ![](images/Screenshot%202021-12-08%20at%2008.48.07.png){width="328"}
+
+3.  Copy the URL on the right-hand side of the page.
+
+    ![](images/Screenshot%202021-12-08%20at%2008.49.24.png){width="335"}
+
+Service URL:
+
+[`https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/World_Countries_(Generalized)/FeatureServer/0`](https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/World_Countries_(Generalized)/FeatureServer/0)
+
+## Downloading Data
+
+The primary function in `getarc` is `query_layer` this does exactly what it says on the tin.
+
+To download the layer, you just need to pass the service url to the endpoint argument of query_layer.
+
+```{r dl-countries, warning=FALSE, cache=FALSE}
+require(getarc)
+require(sf)
+
+# Store the service URL in an object
+ep_world_countries <- "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/World_Countries_(Generalized)/FeatureServer/0"
+
+# Download the layer
+world_countries <- query_layer(endpoint = ep_world_countries)
+
+# Print the spatial data frame
+world_countries
+```
+
+`query_layer` returns a spatial dataframe from the sf library (popular library for vector data in R - similar to `geopandas`). This library has a flexible array of geo-spatial tools and works seamlessly with the tidyverse and other popular R packages.
+
+### Plot the geometry using base R plot:
+
+```{r base-plt-countries}
+plot(world_countries$geometry)
+```
+
+### Use `tidyverse` & `tmap` to plot the UK:
+
+```{r tmap-plt-countries}
+require(tidyverse)
+require(tmap)
+
+world_countries %>% 
+  filter(COUNTRY == "United Kingdom") %>% 
+  tm_shape() + 
+  tm_polygons() + 
+  tm_layout(main.title = "UK")
+```
+
+# Queries
+
+Loading a layer directly into R from the API allows you to combine it with all the powerful tools we have at our disposal. However, a powerful aspect of query_layer is the ability to perform more complex queries to return exactly what you want. This is especially helpful when working with very large layers.
+
+## Simple Sub-Setting & Drop Geometry
+
+If we want a quick look at the shape of the dataset or want to check the values in only one column we can use the following arguments:
+
+-   `return_n = 1` - return only one row
+
+-   `out_fields = "COUNTRY"` - get only the `COUTRY` field
+
+-   `return_geometry = FALSE` - don't return the geometry, only a table
+
+```{r}
+one_country <-
+  query_layer(endpoint = ep_world_countries,
+              return_n = 1, 
+              out_fields = "COUNTRY", 
+              return_geometry = FALSE)
+
+one_country
+```
+
+## SQL Where Query
+
+It is also possible to perform an SQL query on the layer. You need to write the query as a text string (excluding the WHERE keyword) and pass it to the `where` argument:
+
+`where = "COUNTRY ='France'"`
+
+```{r}
+france <- 
+  query_layer(
+  endpoint = ep_world_countries,
+  where = "COUNTRY ='France'"
+)
+
+france %>% 
+  tm_shape() + 
+  tm_polygons()
+```
+
+You can use a where query a bit like you would use the `filter` function from `dplyr`:
+
+```{r}
+smaller_countries <- 
+  query_layer(
+  endpoint = ep_world_countries,
+  where = "Shape__Area < 100189900000"
+)
+
+smaller_countries %>%
+  tm_shape() + 
+  tm_polygons() 
+```
+
+Supported query options (from [documentation](https://developers.arcgis.com/rest/services-reference/enterprise/query-feature-service-layer-.htm)):
+
+    ( '<=' | '>=' | '<' | '>' | '=' | '!=' | '<>' | LIKE )
+    (AND | OR)
+    (IS | IS_NOT)
+    (IN | NOT_IN) ( '(' ( expr ( ',' expr )* )? ')' )
+    COLUMN_NAME BETWEEN LITERAL_VALUE AND LITERAL_VALUE
+
+## Spatial Query
+
+```{r}
+
+```
+
+## Analysis Pipeline
+
+```{r}
+
+```
+
+# Under the hood of `query_layer`
+
+A lot happens under the hood of `query_layer` to provide a smooth experience for the user. Feature layers have a limit on how many records they will return per query (generally around 2,000), so if you want to download many features the function needs to get around this limit.
+
+The function executes the following broad steps:
+
+1.  Get the 'layer details' - json object which gives us a lot of useful info about the layer to inform the subsequent query
+
+    -   Field names & their data types, Feature ID field, field 'domains' (like a factor in R) & their encoding, etc.
+
+2.  Parse function arguments into a query which matches the API specification
+
+    -   simple: `geometry_precision = 1` -> `geometryPrecision=1` or more complex parsing & encoding of spatial data
+
+3.  **Get a list of feature IDs** matching the query, **split that into n lists** which are less than the query limit, then **perform multiple requests to get all the data** matching the query.
+
+4.  Combine the data & parse the variables, swapping domain codes for their values & parsing datetimes
+
+5.  Return the dataset with a spatial transformation if requested.
+
+# Wrap up
+
+-   `getarc::query_layer` provides a simple & powerful way to get data from ArcGIS into R in a useful format.
+
+-   You can perform various queries to get only the data you need, making it easier to work with large datasets or minimising processing time.
+
+-   You can also authenticate via OAuth2.0 to query data on private ArcGIS Online servers (e.g. Jacobs project data).
+
+-   There is a lot more you can do with the ArcGIS API & the Python API supports all of this.
