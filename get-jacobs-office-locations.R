@@ -1,8 +1,10 @@
+rm(list = ls())
+
 require(rvest)
 require(xml2)
 require(tidyverse)
-url <- "https://www.jacobs.com/locations/europe"
 
+# Gt a list of the URLS
 urls <- c(
   "https://www.jacobs.com/locations/united-states",
   "https://www.jacobs.com/locations/canada",
@@ -12,6 +14,7 @@ urls <- c(
   "https://www.jacobs.com/locations/asia-pacific"
 )
 
+# Download the tables from Jacobs Website
 get_table <- 
   function(url){
     url %>% 
@@ -20,28 +23,18 @@ get_table <-
       html_table()
   }
 
+tables <- map(urls, get_table)
 
 
-address_table <- 
-  url %>% 
-  read_html() %>% 
-  html_element("table") %>%
-  html_table()
-
-text <- 
-  address_table %>% 
-  unlist()
-
-
-text[36]
+# Turn the tables into a tibble & drop un-needed rows
+text <- tables %>% unlist()
 address <- tibble(raw = text)
 
-address <- 
-  address %>% 
-  drop_na() %>% 
-  filter(raw != "", nchar(raw) > 50) 
+# Drop un-needed tables
+address <- address %>% drop_na() %>% filter(raw != "", nchar(raw) > 50) 
 
 
+# Parse the address data 
 address <- 
   address %>% 
   mutate(office_name = str_extract(raw, "^.+([[:punct:]]|[a-z])([A-Z]|[0-9])"),
@@ -54,35 +47,31 @@ address <-
          address = address %>% str_sub(start = address_start),
          office_name = office_name %>% trimws(),
          address = address %>% trimws()
-         )  %>% select(raw, office_name, address)
+  )  %>% select(raw, office_name, address)
 
+
+# Add Geometry -----
+# Geocode the addresses
 require(tidygeocoder)
+require(sf)
 coded <- geo(address = address$address, method = "arcgis")
-
-
-# reverse_geo_table <- 
-#   tidygeocoder::reverse_geo(lat = coded$lat, 
-#                             long = coded$long, 
-#                             flatten = FALSE, method = "arcgis")
-
-
 jacobs <- address %>% bind_cols(coded %>% select(lat, long))
 
-require(sf)
+# Convert to SF
 jacobs <- jacobs %>% st_as_sf(coords = c( "long", "lat"), crs = 4326)
 
+# Add Country element
 require(getarc)
 
-world_countries <- query_layer(endpoint = "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/World_Countries_(Generalized)/FeatureServer/0",
-                              in_geometry = st_union(jacobs)
-                              )
-
+ep_world_countries <- "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/World_Countries_(Generalized)/FeatureServer/0"
+world_countries <- query_layer(endpoint = ep_world_countries, in_geometry = st_union(jacobs))
 
 jacobs <- st_join(jacobs, world_countries)
 
 
-jacobs <- 
+# Tidy For output -----
+jacobs_tidy <- 
   jacobs %>% 
   select(office_name, address, country = COUNTRY, iso = ISO)
 
-jacobs %>% st_write("jacobs-offices.geojson")
+jacobs_tidy %>% st_write("jacobs-offices.geojson", delete_dsn = TRUE)

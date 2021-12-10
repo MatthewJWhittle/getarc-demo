@@ -15,6 +15,15 @@ output:
 knitr::opts_chunk$set(echo = TRUE)
 knitr::opts_chunk$set(message = FALSE)
 knitr::opts_chunk$set(warning = FALSE)
+
+# Colour Scheme
+colours <- list(purple = "#A800A8",
+                blue = "#0A7CFF",
+                pink = "#FF465F",
+                yellow = "#FFB41E",
+                green = "#0AD289",
+                dark_green = "#007D55"
+                )
 ```
 
 # Outline:
@@ -101,12 +110,17 @@ plot(world_countries$geometry)
 require(tidyverse)
 require(tmap)
 
-world_countries %>% 
-  filter(COUNTRY == "United Kingdom") %>% 
+uk <- 
+  world_countries %>% 
+  filter(COUNTRY == "United Kingdom") 
+
+uk %>% 
   tm_shape() + 
   tm_polygons() + 
   tm_layout(main.title = "UK")
 ```
+
+------------------------------------------------------------------------
 
 # Queries
 
@@ -161,10 +175,11 @@ smaller_countries <-
 
 smaller_countries %>%
   tm_shape() + 
-  tm_polygons() 
+  tm_polygons() +
+  tm_layout(main.title = "Smaller Countries")
 ```
 
-Supported query options (from [documentation](https://developers.arcgis.com/rest/services-reference/enterprise/query-feature-service-layer-.htm)):
+The Where query supports lots of different options (taken from [documentation](https://developers.arcgis.com/rest/services-reference/enterprise/query-feature-service-layer-.htm)):
 
     ( '<=' | '>=' | '<' | '>' | '=' | '!=' | '<>' | LIKE )
     (AND | OR)
@@ -174,15 +189,129 @@ Supported query options (from [documentation](https://developers.arcgis.com/rest
 
 ## Spatial Query
 
-```{r}
+It is also possible to perform a query using spatial data.
 
+I have a feature layer of geocoded Jacobs office locations which I scraped from our website. I'm going to download the location of all of our UK offices by passing in the UK boundary we created earlier to the `in_geometry` argument and specify the the 'intersects' spatial filter. This will run a query on the feature layer, returning all the feature which intersect with the geometry I passed in.
+
+-   You can pass in any singular geometry to the in_geometry argument (point, lines & polygons - incl multi...)
+
+-   There are multiple options for the spatial_filter: *intersects, contains, crosses, envelope_intersects, index_intersects, overlaps, touches, within*
+
+```{r}
+ep_jacobs_offices <- "https://services6.arcgis.com/k3kybwIccWQ0A7BB/arcgis/rest/services/Jacobs_Offices/FeatureServer/0"
+
+jacobs_uk <- query_layer(endpoint = ep_jacobs_offices, in_geometry = uk, spatial_filter = "intersects")
+
+jacobs_uk
 ```
 
-## Analysis Pipeline
+#### Map of Jacobs UK Offices:
+
+```{r}
+# Load the leaflet package and leafem extension (mapping SF features)
+require(leaflet)
+require(leafem)
+
+# Create a simple leafelet map
+# Use Jacobs colour scheme
+leaflet() %>%
+  addTiles() %>%
+  addFeatures(uk, color = colours$blue, fill = NA) %>%
+  addFeatures(
+    jacobs_uk,
+    color = colours$pink,
+    fillOpacity = 0.7,
+    fillColor = colours$yellow,
+    popup = ~ office_name
+  )
+```
+
+## Analysis Pipeline 
+
+Which UK Office has the most Green Space within a 1km radius?
 
 ```{r}
 
+ep_os_greenspace <- "https://services5.arcgis.com/piNGxor37zqmvRAm/arcgis/rest/services/OS_Open_Greenspace/FeatureServer/1"
+
+# Transform the Office locations to British National Grid (units: m) to buffer to 1km (1000m)
+jacobs_uk_1km <- jacobs_uk %>% st_transform(crs = 27700) %>% st_buffer(1000) 
+
+# Get the greenspace data. 
+# Union the buffered office locations as in_geometry only accepts combined geometries
+# This conversts it into a multipolygon
+greenspace <- query_layer(endpoint = ep_os_greenspace, in_geometry = st_union(jacobs_uk_1km))
+
+greenspace <- 
+  greenspace %>% 
+  mutate(popup = glue::glue("{distName1} ({function_})"))
+
+# Map the data
+greenspace_map <- 
+  leaflet() %>%
+  addTiles() %>%
+  addFeatures(uk, color = colours$blue, fill = NA) %>%
+  addFeatures(greenspace, color = colours$dark_green, fillOpacity = 0.9, popup = ~popup) %>% 
+  addFeatures(
+    jacobs_uk,
+    color = colours$pink,
+    fillOpacity = 0.7,
+    fillColor = colours$yellow,
+    popup = ~ office_name
+  )
+
+greenspace_map
 ```
+
+```{r}
+
+greenspace_jc <- greenspace %>% st_join(jacobs_uk_1km %>% st_transform(crs = 4326))
+
+# Define a function to convert m2 to hectares
+to_hectares <- 
+  function(x){
+    x_ha <- x / 10000
+    units::as_units(as.numeric(x_ha), "ha")
+  }
+
+
+greenspace_summary <- 
+  greenspace_jc %>%
+  mutate(area_ha = geometry %>% st_area() %>% to_hectares()) %>% 
+  st_drop_geometry() %>% 
+  group_by(office_name) %>% 
+  summarise(total_greenspace_area_ha = sum(area_ha) %>% round(1))
+
+greenspace_summary <- 
+  greenspace_summary %>% 
+  arrange(desc(total_greenspace_area_ha))
+
+greenspace_summary
+```
+
+```{r}
+# Make an icon to highlight offices with a lot of greenspace
+greenLeafIcon <- makeIcon(
+  iconUrl = "https://leafletjs.com/examples/custom-icons/leaf-green.png",
+  iconWidth = 38, iconHeight = 95,
+  iconAnchorX = 22, iconAnchorY = 94,
+  shadowUrl = "https://leafletjs.com/examples/custom-icons/leaf-shadow.png",
+  shadowWidth = 50, shadowHeight = 64,
+  shadowAnchorX = 4, shadowAnchorY = 62
+)
+
+top_3 <- jacobs_uk %>%
+  left_join(greenspace_summary) %>%
+  slice_max(order_by = total_greenspace_area_ha, n = 3) %>%
+  mutate(long = st_coordinates(geometry)[,1],
+         lat = st_coordinates(geometry)[,2])
+
+greenspace_map %>% 
+  addMarkers(lng = top_3$long, lat = top_3$lat,
+              icon = greenLeafIcon)
+```
+
+------------------------------------------------------------------------
 
 # Under the hood of `query_layer`
 
@@ -203,6 +332,8 @@ The function executes the following broad steps:
 4.  Combine the data & parse the variables, swapping domain codes for their values & parsing datetimes
 
 5.  Return the dataset with a spatial transformation if requested.
+
+------------------------------------------------------------------------
 
 # Wrap up
 
