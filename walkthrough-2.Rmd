@@ -54,7 +54,7 @@ colours <- list(purple = "#A800A8",
 
 # Feature Layer
 
-ArcGIS host spatial data in 'Feature Layers'. Below is an example: the World Countries Feature Layer.
+ArcGIS host spatial data in 'Feature Layers'. Below is an example: the [World Countries Feature Layer](https://hub.arcgis.com/datasets/2b93b06dc0dc4e809d3c8db5cb96ba69_0/explore).
 
 [![Explore view of World Countries (Generalised) Feature Layer](images/Screenshot%202021-12-09%20at%2006.39.31-01.png "World Countries Feature Layer"){width="512"}](https://hub.arcgis.com/datasets/2b93b06dc0dc4e809d3c8db5cb96ba69_0/explore)
 
@@ -93,7 +93,7 @@ ep_world_countries <- "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/
 world_countries <- query_layer(endpoint = ep_world_countries)
 
 # Print the spatial data frame
-world_countries
+world_countries %>% rmarkdown::paged_table()
 ```
 
 `query_layer` returns a spatial dataframe from the sf library (popular library for vector data in R - similar to `geopandas`). This library has a flexible array of geo-spatial tools and works seamlessly with the tidyverse and other popular R packages.
@@ -136,7 +136,7 @@ If we want a quick look at the shape of the dataset or want to check the values 
 
 -   `return_geometry = FALSE` - don't return the geometry, only a table
 
-```{r}
+```{r one-country}
 one_country <-
   query_layer(endpoint = ep_world_countries,
               return_n = 1, 
@@ -152,7 +152,7 @@ It is also possible to perform an SQL query on the layer. You need to write the 
 
 `where = "COUNTRY ='France'"`
 
-```{r}
+```{r where-query}
 france <- 
   query_layer(
   endpoint = ep_world_countries,
@@ -166,7 +166,7 @@ france %>%
 
 You can use a where query a bit like you would use the `filter` function from `dplyr`:
 
-```{r}
+```{r small-countries}
 smaller_countries <- 
   query_layer(
   endpoint = ep_world_countries,
@@ -197,12 +197,12 @@ I have a feature layer of geocoded Jacobs office locations which I scraped from 
 
 -   There are multiple options for the spatial_filter: *intersects, contains, crosses, envelope_intersects, index_intersects, overlaps, touches, within*
 
-```{r}
+```{r jacobs-uk}
 ep_jacobs_offices <- "https://services6.arcgis.com/k3kybwIccWQ0A7BB/arcgis/rest/services/Jacobs_Offices/FeatureServer/0"
 
 jacobs_uk <- query_layer(endpoint = ep_jacobs_offices, in_geometry = uk, spatial_filter = "intersects")
 
-jacobs_uk
+jacobs_uk %>% rmarkdown::paged_table()
 ```
 
 #### Map of Jacobs UK Offices:
@@ -226,7 +226,7 @@ leaflet() %>%
   )
 ```
 
-## Analysis Pipeline 
+## Analysis Pipeline
 
 Which UK Office has the most Green Space within a 1km radius?
 
@@ -286,7 +286,7 @@ greenspace_summary <-
   greenspace_summary %>% 
   arrange(desc(total_greenspace_area_ha))
 
-greenspace_summary
+greenspace_summary %>% rmarkdown::paged_table()
 ```
 
 ```{r}
